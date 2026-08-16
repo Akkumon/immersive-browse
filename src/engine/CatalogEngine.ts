@@ -83,9 +83,11 @@ export class CatalogEngine {
   private totalHeight: number
   private disposed = false
   private environmentTexture?: THREE.DataTexture
-  private catalogGeometry?: THREE.PlaneGeometry
+  private catalogGeometry?: THREE.BufferGeometry
+  private glassGeometry?: THREE.BufferGeometry
   private textures = new Set<THREE.Texture>()
   private isWebGL = false
+  private simulateBlackCenter = new URLSearchParams(location.search).has('qa-simulate-black-center')
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -132,8 +134,10 @@ export class CatalogEngine {
     if (!this.isWebGL) this.environmentTexture = this.makeStudioEnvironment()
     // The card is deliberately a plane. Its slab silhouette, bevel and optics are
     // reconstructed in TSL rather than delegated to a built-in glass material.
-    const geometry = new THREE.PlaneGeometry(TILE_W, TILE_H, 24, 12)
-    this.catalogGeometry = geometry
+    const baseGeometry = this.makeRoundedCardGeometry(TILE_W, TILE_H, 0.19)
+    const glassGeometry = new THREE.PlaneGeometry(TILE_W, TILE_H, 24, 12)
+    this.catalogGeometry = baseGeometry
+    this.glassGeometry = glassGeometry
     const loadTexture = (url: string) => loader.loadAsync(url)
 
     for (let row = 0; row < this.catalog.length; row++) {
@@ -154,7 +158,13 @@ export class CatalogEngine {
           map.anisotropy = 1
         }
         const focusNode = uniform(0)
-        const material = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: true })
+        // Keep the artwork on Three's canonical texture path. Some WebGPU
+        // adapters have returned black for a non-displaced TSL texture sample
+        // while continuing to render displaced samples around the same card.
+        // The custom TSL layer below now owns only the optical perimeter, so a
+        // node-sampling quirk can never erase the thumbnail itself.
+        const baseMaterial = new THREE.MeshBasicMaterial({ map })
+        const material = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false })
 
         // Rounded-box SDF and bevel height field. The surface normal is rebuilt
         // from finite differences of the actual height field—not from UV position.
@@ -195,7 +205,10 @@ export class CatalogEngine {
           1,
         ).normalize()
 
-        const undistorted = textureNode(map, cardUv).rgb
+        // QA-only fault injection mirrors the adapter-specific failure observed
+        // in the field: displaced edge samples survive while the center sample
+        // resolves to black.
+        const undistorted = this.simulateBlackCenter ? color(0x000000) : textureNode(map, cardUv).rgb
         let glass: any
 
         if (this.isWebGL) {
@@ -249,11 +262,16 @@ export class CatalogEngine {
         const elevatedGlass = mix(glass, color('#d8ecff'), edgeProximity.pow(1.08).mul(0.12))
         const focusedGlass = mix(elevatedGlass, elevatedGlass.mul(1.025).add(color(0xffffff).mul(0.006)), focusNode)
 
-        material.outputNode = vec4(focusedGlass, alpha)
+        const glassAlpha = alpha.mul(smoothstep(0.035, 0.82, edgeProximity))
+        material.outputNode = vec4(focusedGlass, glassAlpha)
         // Keep the plane geometry stable across WebGPU implementations. The SDF
         // height field is expressed through its reconstructed optical normal.
         material.positionNode = positionLocal.add(normalLocal.mul(focusNode.mul(0.05)))
-        const mesh = new THREE.Mesh(geometry, material)
+        const mesh = new THREE.Mesh(baseGeometry, baseMaterial)
+        const glassMesh = new THREE.Mesh(glassGeometry, material)
+        glassMesh.position.z = 0.004
+        glassMesh.renderOrder = 1
+        mesh.add(glassMesh)
         mesh.userData.showId = show.id
         mesh.userData.selectable = true
         this.scene.add(mesh)
@@ -296,6 +314,31 @@ export class CatalogEngine {
     environment.magFilter = THREE.LinearFilter
     environment.needsUpdate = true
     return environment
+  }
+
+  private makeRoundedCardGeometry(width: number, height: number, radius: number) {
+    const halfWidth = width * 0.5
+    const halfHeight = height * 0.5
+    const shape = new THREE.Shape()
+    shape.moveTo(-halfWidth + radius, -halfHeight)
+    shape.lineTo(halfWidth - radius, -halfHeight)
+    shape.quadraticCurveTo(halfWidth, -halfHeight, halfWidth, -halfHeight + radius)
+    shape.lineTo(halfWidth, halfHeight - radius)
+    shape.quadraticCurveTo(halfWidth, halfHeight, halfWidth - radius, halfHeight)
+    shape.lineTo(-halfWidth + radius, halfHeight)
+    shape.quadraticCurveTo(-halfWidth, halfHeight, -halfWidth, halfHeight - radius)
+    shape.lineTo(-halfWidth, -halfHeight + radius)
+    shape.quadraticCurveTo(-halfWidth, -halfHeight, -halfWidth + radius, -halfHeight)
+
+    const geometry = new THREE.ShapeGeometry(shape, 10)
+    const positions = geometry.getAttribute('position')
+    const coordinates = new Float32Array(positions.count * 2)
+    for (let index = 0; index < positions.count; index++) {
+      coordinates[index * 2] = positions.getX(index) / width + 0.5
+      coordinates[index * 2 + 1] = positions.getY(index) / height + 0.5
+    }
+    geometry.setAttribute('uv', new THREE.BufferAttribute(coordinates, 2))
+    return geometry
   }
 
   private bindEvents() {
@@ -590,6 +633,7 @@ export class CatalogEngine {
       }
     })
     this.catalogGeometry?.dispose()
+    this.glassGeometry?.dispose()
     this.textures.forEach((texture) => texture.dispose())
     this.textures.clear()
     this.environmentTexture?.dispose()
