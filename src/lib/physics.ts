@@ -19,3 +19,8 @@ export function wrap(value: number, range: number) {
 export function dampVelocity(value: number, drag: number, dt: number) {
   return value * Math.exp(-drag * dt)
 }
+
+/** Frame-rate independent exponential following for live input targets. */
+export function smoothFollow(current: number, target: number, dt: number, response = 30) {
+  return current + (target - current) * (1 - Math.exp(-response * Math.min(dt, 1 / 20)))
+}

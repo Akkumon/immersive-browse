@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu'
 import * as TSL from 'three/tsl'
 import type { Category, Show } from '../data/catalog'
-import { HandSelectionIntent, palmSwipeVector, type Gesture } from '../lib/gestures'
-import { dampVelocity, stepSpring, wrap, type Spring } from '../lib/physics'
+import { FistShuffleRecognizer, fistShuffleVector, HandSelectionIntent, palmMotionVector, type Gesture } from '../lib/gestures'
+import { dampVelocity, smoothFollow, stepSpring, wrap, type Spring } from '../lib/physics'
 import type { LiquidSound } from '../lib/sound'
 
 type TileRecord = {
@@ -55,6 +55,7 @@ export class CatalogEngine {
   private pointer = new THREE.Vector2(0, 0)
   private tiles: TileRecord[] = []
   private pan = new THREE.Vector2()
+  private handPanTarget = new THREE.Vector2()
   private velocity = new THREE.Vector2()
   private dragging = false
   private dragOrigin = new THREE.Vector2()
@@ -64,11 +65,14 @@ export class CatalogEngine {
   private focused?: TileRecord
   private hoveredId?: string
   private previousGesture: Gesture = 'idle'
-  private palmOrigin = new THREE.Vector2()
-  private palmOriginAt = 0
-  private palmSwipeCommitted = false
+  private lastHandPoint = new THREE.Vector2()
+  private handManipulating = false
   private lastHandSampleAt = 0
   private handSelection = new HandSelectionIntent()
+  private fistShuffle = new FistShuffleRecognizer()
+  private shuffleSequence = 0
+  private handVisible = false
+  private handTargeting = false
   private frame = 0
   private lastTime = performance.now()
   private lastMoveSound = 0
@@ -186,8 +190,8 @@ export class CatalogEngine {
         // between centers so adjacent planes read as one continuous surface.
         const fieldSlope = vec2(positionLocal.x.mul(0.012), positionLocal.y.mul(0.009))
         const rebuiltNormal = vec3(
-          gradient.x.negate().mul(0.038).add(fieldSlope.x),
-          gradient.y.negate().mul(0.038).add(fieldSlope.y),
+          gradient.x.negate().mul(0.045).add(fieldSlope.x),
+          gradient.y.negate().mul(0.045).add(fieldSlope.y),
           1,
         ).normalize()
 
@@ -212,7 +216,7 @@ export class CatalogEngine {
           const incidentRay = viewDirectionLocal.negate()
           const sampleThroughSlab = (ior: number) => {
             const ray = incidentRay.refract(rebuiltNormal, float(1 / ior)).normalize()
-            const travel = float(0.115).div(max(ray.z.abs(), 0.25))
+            const travel = float(0.13).div(max(ray.z.abs(), 0.25))
             const uvOffset = vec2(ray.x.div(TILE_W), ray.y.div(TILE_H)).mul(travel)
             return textureNode(map, cardUv.add(uvOffset))
           }
@@ -220,7 +224,7 @@ export class CatalogEngine {
           const sampleG = sampleThroughSlab(1.5).g
           const sampleB = sampleThroughSlab(1.505).b
           const dispersed = vec3(sampleR, sampleG, sampleB)
-          const opticalWeight = edgeProximity.pow(1.72).mul(0.58)
+          const opticalWeight = edgeProximity.pow(1.58).mul(0.66)
           const refracted = mix(undistorted, dispersed, opticalWeight)
 
           // Sample a genuine high-dynamic-range equirectangular environment with
@@ -235,16 +239,19 @@ export class CatalogEngine {
           const specular = max(rebuiltNormal.dot(lightDirection), 0)
             .pow(110)
             .mul(edgeProximity.pow(1.35))
-            .mul(0.028)
+            .mul(0.038)
           const reflectionWeight = fresnel.mul(edgeProximity.pow(1.45)).mul(0.72)
           const transmission = refracted.mul(float(1).sub(reflectionWeight.mul(0.22)))
           glass = transmission
-            .add(environment.mul(reflectionWeight.mul(0.11)))
+            .add(environment.mul(reflectionWeight.mul(0.15)))
             .add(vec3(specular))
         }
-        const focusedGlass = mix(glass, glass.mul(1.025).add(color(0xffffff).mul(0.006)), focusNode)
+        const elevatedGlass = mix(glass, color('#d8ecff'), edgeProximity.pow(1.08).mul(0.12))
+        const focusedGlass = mix(elevatedGlass, elevatedGlass.mul(1.025).add(color(0xffffff).mul(0.006)), focusNode)
 
         material.outputNode = vec4(focusedGlass, alpha)
+        // Keep the plane geometry stable across WebGPU implementations. The SDF
+        // height field is expressed through its reconstructed optical normal.
         material.positionNode = positionLocal.add(normalLocal.mul(focusNode.mul(0.05)))
         const mesh = new THREE.Mesh(geometry, material)
         mesh.userData.showId = show.id
@@ -377,65 +384,62 @@ export class CatalogEngine {
     }
   }
 
-  updateHand(point: { x: number; y: number }, gesture: Gesture, visible: boolean, pinchCandidate = false) {
+  updateHand(point: { x: number; y: number }, gesture: Gesture, visible: boolean, airTapCandidate = false, airTap = false) {
     if (!visible) {
+      this.handVisible = false
+      this.handTargeting = false
       this.previousGesture = 'idle'
-      this.palmSwipeCommitted = false
       this.lastHandSampleAt = 0
+      this.handManipulating = false
       this.handSelection.reset()
+      this.fistShuffle.reset()
       return
     }
+    this.handVisible = true
     const now = performance.now()
     const next = new THREE.Vector2(point.x, point.y)
-    const delta = next.clone().sub(this.pointer)
+    const previousHandPoint = this.lastHandPoint.clone()
     const handDt = this.lastHandSampleAt ? Math.max((now - this.lastHandSampleAt) / 1000, 1 / 120) : 0
     this.lastHandSampleAt = now
+    this.lastHandPoint.copy(next)
     const screenPoint = { x: (point.x + 1) / 2, y: 1 - (point.y + 1) / 2 }
-    this.events.onTrackingPoint(screenPoint, gesture === 'pinch' || gesture === 'grab')
+    const palmNavigating = gesture === 'palm'
+    this.events.onTrackingPoint(screenPoint, airTapCandidate || palmNavigating || gesture === 'grab')
 
-    if (gesture === 'grab') {
-      if (this.previousGesture === 'grab') {
-        const panScale = this.handPanScale()
-        const movementX = delta.x * panScale.x
-        const movementY = delta.y * panScale.y
-        this.applyPan(movementX, movementY)
-        if (handDt) this.velocity.set(movementX / handDt, movementY / handDt)
+    this.handManipulating = false
+    if (palmNavigating) {
+      this.handManipulating = true
+      if (this.previousGesture === 'palm' && handDt) {
+        const motion = palmMotionVector(previousHandPoint, next)
+        const motionLength = Math.hypot(motion.x, motion.y)
+        if (motionLength > 0.0015) {
+          const panScale = this.handPanScale()
+          const movementX = motion.x * panScale.x
+          const movementY = motion.y * panScale.y
+          this.handPanTarget.x += movementX
+          this.handPanTarget.y += movementY
+          this.soundForMovement(movementX, movementY)
+          const inherited = new THREE.Vector2(movementX / handDt, movementY / handDt).clampLength(0, 30)
+          this.velocity.lerp(inherited, 0.58)
+        } else {
+          this.velocity.multiplyScalar(0.72)
+        }
       } else {
         this.velocity.set(0, 0)
+        this.handPanTarget.copy(this.pan)
+        // Entering a manipulation interrupts any inherited momentum instantly.
       }
-      this.dragging = true
-    } else {
-      this.dragging = false
     }
-
-    if (gesture === 'palm') {
-      if (this.previousGesture !== 'palm') {
-        this.palmOrigin.copy(next)
-        this.palmOriginAt = now
-        this.palmSwipeCommitted = false
-      } else if (!this.palmSwipeCommitted) {
-        const travel = next.clone().sub(this.palmOrigin)
-        const elapsed = now - this.palmOriginAt
-        const swipe = palmSwipeVector(this.palmOrigin, next, elapsed)
-        if (swipe.x || swipe.y) {
-          // A palm wave is a single physical push. It transfers direction into
-          // the same interruptible momentum used by pointer/fist release.
-          const panScale = this.handPanScale()
-          const elapsedSeconds = Math.max(elapsed / 1000, 1 / 120)
-          const movement = new THREE.Vector2(swipe.x * panScale.x, swipe.y * panScale.y)
-          const inheritedVelocity = movement.clone().divideScalar(elapsedSeconds).clampLength(0, 30)
-          this.applyPan(movement.x * 0.3, movement.y * 0.3)
-          this.velocity.copy(inheritedVelocity)
-          this.palmSwipeCommitted = true
-        }
-      }
-    } else {
-      this.palmSwipeCommitted = false
-    }
-    const selection = this.handSelection.update(gesture, this.catalogIsMoving(), pinchCandidate)
+    // Pointing owns the ray immediately. Do not make the user wait for stale
+    // palm momentum to decay before a newly settled viewport becomes targetable.
+    if (gesture === 'point' && this.previousGesture === 'palm') this.velocity.set(0, 0)
+    if (this.fistShuffle.update(gesture)) this.launchFistShuffle()
+    const selection = this.handSelection.update(gesture, this.catalogIsMoving(), airTapCandidate, airTap)
+    this.handTargeting = selection.trackTarget || selection.armed || selection.select
     if (selection.trackTarget) {
-      if (this.previousGesture === 'point') this.pointer.lerp(next, 0.58)
-      else this.pointer.copy(next)
+      // Pointing is direct manipulation: the ray follows the current fingertip
+      // sample with no fixed lerp delay. Air-tap targeting locks separately.
+      this.pointer.copy(next)
     }
     if (selection.select) {
       this.updateFocus()
@@ -449,6 +453,28 @@ export class CatalogEngine {
     return { x: visibleHeight * this.camera.aspect * 0.5, y: visibleHeight * 0.5 }
   }
 
+  private launchFistShuffle() {
+    const throwVelocity = fistShuffleVector(this.shuffleSequence, this.totalWidth, this.totalHeight)
+    this.shuffleSequence += 1
+    const direction = new THREE.Vector2(throwVelocity.x, throwVelocity.y)
+    if (this.reducedMotion) {
+      direction.normalize()
+      this.applyPan(direction.x * 1.3, direction.y * 1.3)
+      this.velocity.set(0, 0)
+      return
+    }
+    this.velocity.copy(direction)
+    this.sound.move(1)
+  }
+
+  private soundForMovement(x: number, y: number) {
+    const now = performance.now()
+    if (now - this.lastMoveSound > 85) {
+      this.sound.move(Math.hypot(x, y))
+      this.lastMoveSound = now
+    }
+  }
+
   private selectFocused() {
     if (!this.focused) return
     this.sound.select()
@@ -456,7 +482,17 @@ export class CatalogEngine {
   }
 
   private updateLayout(dt: number) {
-    if (!this.dragging) {
+    if (this.handManipulating) {
+      if (this.reducedMotion) {
+        this.pan.copy(this.handPanTarget)
+      } else {
+        // Camera inference updates less often than the display. Following the
+        // latest hand target on every RAF fills those missing presentation
+        // frames while retaining an immediate, interruptible response.
+        this.pan.x = smoothFollow(this.pan.x, this.handPanTarget.x, dt, 34)
+        this.pan.y = smoothFollow(this.pan.y, this.handPanTarget.y, dt, 34)
+      }
+    } else if (!this.dragging) {
       if (this.reducedMotion) {
         this.velocity.set(0, 0)
       } else {
@@ -487,7 +523,7 @@ export class CatalogEngine {
   }
 
   private updateFocus() {
-    if (this.catalogIsMoving()) {
+    if (this.catalogIsMoving() || (this.handVisible && !this.handTargeting)) {
       this.focused = undefined
       this.hoveredId = undefined
       for (const tile of this.tiles) tile.focus.target = 0
@@ -513,7 +549,7 @@ export class CatalogEngine {
   }
 
   private catalogIsMoving() {
-    return this.dragging || this.previousGesture === 'palm' || this.velocity.lengthSq() >= 0.12
+    return this.dragging || this.handManipulating || this.velocity.lengthSq() >= 0.12
   }
 
   private animate = (time: number) => {

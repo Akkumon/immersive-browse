@@ -9,13 +9,28 @@ self.onmessage = async (event: MessageEvent) => {
   if (event.data.type === 'init') {
     try {
       const vision = { wasmLoaderPath, wasmBinaryPath }
-      landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: '/mediapipe/hand_landmarker.task', delegate: 'CPU' },
+      const commonOptions = {
         runningMode: 'VIDEO',
         numHands: 1,
         minHandDetectionConfidence: 0.55,
         minHandPresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
+      } as const
+      if (typeof OffscreenCanvas !== 'undefined') {
+        try {
+          landmarker = await HandLandmarker.createFromOptions(vision, {
+            ...commonOptions,
+            baseOptions: { modelAssetPath: '/mediapipe/hand_landmarker.task', delegate: 'GPU' },
+            canvas: new OffscreenCanvas(1, 1),
+          })
+        } catch {
+          // Some browsers expose OffscreenCanvas without a usable worker WebGL
+          // context. CPU remains a functional fallback rather than a hard fail.
+        }
+      }
+      landmarker ??= await HandLandmarker.createFromOptions(vision, {
+        ...commonOptions,
+        baseOptions: { modelAssetPath: '/mediapipe/hand_landmarker.task', delegate: 'CPU' },
       })
       self.postMessage({ type: 'ready' })
     } catch (error) {

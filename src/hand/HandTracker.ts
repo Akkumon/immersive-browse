@@ -1,11 +1,12 @@
-import { classifyGesture, GestureStabilizer, landmarkToNdc, type Gesture, type Point3 } from '../lib/gestures'
+import { AdaptivePointFilter, classifyGesture, GestureStabilizer, indexForwardDepth, IndexAirTapRecognizer, landmarkToNdc, type Gesture, type Point3 } from '../lib/gestures'
 
 export type TrackingUpdate = {
   visible: boolean
   point: { x: number; y: number }
   screenPoint: { x: number; y: number }
   gesture: Gesture
-  pinchCandidate: boolean
+  airTapCandidate: boolean
+  airTap: boolean
   handedness?: string
 }
 
@@ -18,7 +19,11 @@ export class HandTracker {
   private busy = false
   private disposed = false
   private lastSample = 0
+  private missedFrames = 0
+  private lastUpdate?: TrackingUpdate
   private stabilizer = new GestureStabilizer()
+  private airTap = new IndexAirTapRecognizer()
+  private pointFilter = new AdaptivePointFilter()
   private resolveWorkerReady?: () => void
   private rejectWorkerReady?: (error: Error) => void
   private workerReady: Promise<void>
@@ -43,7 +48,7 @@ export class HandTracker {
     this.onStatus('loading', 'Hand model ready')
     if (this.disposed) return
     this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
       audio: false,
     })
     this.video.srcObject = this.stream
@@ -72,28 +77,62 @@ export class HandTracker {
       this.busy = false
       const landmarks = event.data.landmarks as Point3[]
       if (!landmarks.length) {
+        this.missedFrames += 1
+        if (this.lastUpdate && this.missedFrames <= 3) {
+          // Bridge a few dropped detections without inventing movement. This
+          // prevents a momentary landmark miss from breaking an active wave.
+          this.onUpdate({
+            ...this.lastUpdate,
+            point: { ...this.lastUpdate.point },
+            screenPoint: { ...this.lastUpdate.screenPoint },
+            airTapCandidate: false,
+            airTap: false,
+          })
+          return
+        }
         this.stabilizer.reset()
-        this.onUpdate({ visible: false, point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle', pinchCandidate: false })
+        this.airTap.reset()
+        this.pointFilter.reset()
+        this.lastUpdate = undefined
+        this.onUpdate({ visible: false, point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle', airTapCandidate: false, airTap: false })
         this.onStatus('lost')
         return
       }
-      const point = landmarkToNdc(landmarks[8])
+      this.missedFrames = 0
       const rawGesture = classifyGesture(landmarks)
+      const gesture = this.stabilizer.update(rawGesture)
+      const source = gesture === 'palm' || gesture === 'grab'
+        ? [0, 5, 9, 13, 17].reduce(
+            (center, index) => ({
+              x: center.x + landmarks[index].x / 5,
+              y: center.y + landmarks[index].y / 5,
+              z: center.z + landmarks[index].z / 5,
+            }),
+            { x: 0, y: 0, z: 0 },
+          )
+        : landmarks[8]
+      const rawPoint = landmarkToNdc(source)
+      const point = gesture === 'point' ? this.pointFilter.update(rawPoint) : rawPoint
+      if (gesture !== 'point') this.pointFilter.reset()
+      const airTap = this.airTap.update(gesture, indexForwardDepth(landmarks), rawPoint)
       this.onStatus('ready')
-      this.onUpdate({
+      const update: TrackingUpdate = {
         visible: true,
         point,
         screenPoint: { x: (point.x + 1) / 2, y: 1 - (point.y + 1) / 2 },
-        gesture: this.stabilizer.update(rawGesture),
-        pinchCandidate: rawGesture === 'pinch',
+        gesture,
+        airTapCandidate: airTap.candidate,
+        airTap: airTap.commit,
         handedness: event.data.handedness,
-      })
+      }
+      this.lastUpdate = update
+      this.onUpdate(update)
     }
   }
 
   private sample = async (time: number) => {
     if (this.disposed) return
-    if (this.ready && !this.busy && this.video.readyState >= 2 && time - this.lastSample > 45) {
+    if (this.ready && !this.busy && this.video.readyState >= 2 && time - this.lastSample > 24) {
       this.busy = true
       this.lastSample = time
       try {

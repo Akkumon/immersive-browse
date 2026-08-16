@@ -10,9 +10,9 @@ Immersive Browse is a local-first, publicly hostable prototype that turns a cura
 - **Show Tile** — a thick refractive card containing one still image.
 - **Elastic Focus Field** — the focused tile's lift plus the smaller deformation passed into neighboring tiles.
 - **Point** — aiming with an index finger or pointer without activation.
-- **Pinch Select** — index-to-thumb activation committed against the tile locked by the preceding index aim; contact motion never retargets.
-- **Grab Pan** — closed-hand direct manipulation of the surface.
-- **Palm Push** — one deliberate open-palm directional swipe that hands 2D velocity to the surface without entering continuous drag.
+- **Forward Tap Select** — a short forward index stroke committed against the tile locked by the preceding index aim; press motion never retargets.
+- **Palm Pan** — continuous open-palm direct manipulation in two dimensions; the surface follows every tracked sample and inherits the measured velocity when the hand becomes still or leaves view.
+- **Fist Shuffle** — a single rapid momentum throw triggered by a stable closed fist; it cannot repeat until the hand opens again.
 - **Momentum Release** — velocity passed from a released drag into interruptible inertial motion.
 - **Detail Overlay** — focused information above a subdued surface, with Play, Watchlist, Like, and Close.
 - **Static Player** — Netflix-like player chrome over a still thumbnail; playback controls are simulated.

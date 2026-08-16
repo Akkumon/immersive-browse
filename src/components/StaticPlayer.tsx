@@ -19,7 +19,7 @@ export function StaticPlayer({ show, onClose }: { show: Show; onClose: () => voi
     <section ref={dialogRef} className="static-player" role="dialog" aria-modal="true" aria-label={`${show.title} player`}>
       <div className="player-image" style={{ backgroundImage: `url(${show.image})` }} />
       <div className="player-vignette" aria-hidden="true" />
-      <button className="player-back" onClick={onClose} aria-label="Back"><ArrowLeft weight="bold" /></button>
+      <button className="player-back" data-spatial-action onClick={onClose} aria-label="Back"><ArrowLeft weight="bold" /></button>
       <div className="player-title"><strong>{show.title}</strong><span>Static preview</span></div>
       <div className="player-controls">
         <input aria-label="Playback position" type="range" min="0" max="100" value={progress} onChange={(event) => setProgress(Number(event.target.value))} style={{ '--progress': `${progress}%` } as React.CSSProperties} />
