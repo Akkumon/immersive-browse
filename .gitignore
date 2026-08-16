@@ -1,0 +1,9 @@
+node_modules
+.node_modules-v8-backup
+.node_modules-icloud
+.dataless-backup
+dist
+.DS_Store
+coverage
+*.tsbuildinfo
+*.local
