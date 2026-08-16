@@ -1,6 +1,52 @@
 export type Point3 = { x: number; y: number; z: number }
 export type Gesture = 'point' | 'pinch' | 'grab' | 'palm' | 'idle'
 
+export type HandSelectionDecision = {
+  trackTarget: boolean
+  select: boolean
+  armed: boolean
+}
+
+export class HandSelectionIntent {
+  private previous: Gesture = 'idle'
+  private pointFrames = 0
+  private armed = false
+
+  update(gesture: Gesture, catalogMoving: boolean, pinchCandidate = false): HandSelectionDecision {
+    let trackTarget = false
+    let select = false
+
+    if (catalogMoving || gesture === 'grab' || gesture === 'palm') {
+      this.pointFrames = 0
+      this.armed = false
+    } else if (gesture === 'point') {
+      if (!pinchCandidate) {
+        trackTarget = true
+        this.pointFrames = this.previous === 'point' ? this.pointFrames + 1 : 1
+        this.armed = this.pointFrames >= 2
+      }
+    } else if (gesture === 'pinch') {
+      // Commit against the target locked by the preceding point pose. The
+      // inward fingertip motion of the tap must never retarget the ray.
+      select = this.previous === 'point' && this.armed
+      this.pointFrames = 0
+      this.armed = false
+    } else {
+      this.pointFrames = 0
+      this.armed = false
+    }
+
+    this.previous = gesture
+    return { trackTarget, select, armed: this.armed }
+  }
+
+  reset() {
+    this.previous = 'idle'
+    this.pointFrames = 0
+    this.armed = false
+  }
+}
+
 export class GestureStabilizer {
   private current: Gesture = 'idle'
   private candidate: Gesture = 'idle'
@@ -18,10 +64,10 @@ export class GestureStabilizer {
     } else {
       this.candidateFrames += 1
     }
-    // Selection carries the highest cost, so a pinch must remain intentional
-    // for three consecutive camera samples before it can commit.
+    // Intent gating happens after stabilization, so two pinch samples are
+    // enough to preserve a quick thumb-index tap without accepting a blip.
     const threshold = next === 'pinch'
-      ? 3
+      ? 2
       : this.current === 'palm'
         ? 3
         : this.current === 'pinch'
@@ -59,10 +105,7 @@ export function classifyGesture(landmarks: Point3[]): Gesture {
   if (curled === 4) return 'grab'
 
   const pinch = distance(landmarks[4], landmarks[8]) / palmScale
-  const otherFingersExtended = [12, 16, 20].filter(
-    (tip) => distance(landmarks[tip], landmarks[0]) > distance(landmarks[tip - 2], landmarks[0]) * 1.12,
-  ).length
-  if (pinch < 0.28 && otherFingersExtended >= 2) return 'pinch'
+  if (pinch < 0.36) return 'pinch'
   if (extended === 4) return 'palm'
 
   const indexExtended = distance(landmarks[8], landmarks[0]) > distance(landmarks[6], landmarks[0]) * 1.18

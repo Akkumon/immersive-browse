@@ -40,8 +40,8 @@ export function App() {
   const [muted, setMuted] = useState(false)
   const [liked, setLiked] = useState(() => readSet('immersive-liked'))
   const [listed, setListed] = useState(() => readSet('immersive-watchlist'))
-  const [hand, setHand] = useState<{ point: { x: number; y: number }; screenPoint: { x: number; y: number }; gesture: Gesture; visible: boolean }>({
-    point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle', visible: false,
+  const [hand, setHand] = useState<{ point: { x: number; y: number }; screenPoint: { x: number; y: number }; gesture: Gesture; visible: boolean; pinchCandidate: boolean }>({
+    point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle', visible: false, pinchCandidate: false,
   })
 
   const handleTracking = useCallback((update: TrackingUpdate) => setHand(update), [])
@@ -87,7 +87,7 @@ export function App() {
 
   const trackPointer = useCallback((point: { x: number; y: number }, active: boolean) => {
     if (handVisible.current) return
-    setHand((current) => ({ ...current, screenPoint: point, gesture: active ? 'grab' : 'point' }))
+    setHand((current) => ({ ...current, screenPoint: point, gesture: active ? 'grab' : 'point', pinchCandidate: false }))
   }, [])
 
   const toggleStored = (key: string, id: string, setter: React.Dispatch<React.SetStateAction<Set<string>>>) => {
@@ -102,7 +102,7 @@ export function App() {
 
   if (!started) return <Gate onStart={start} error={gateError} busy={starting} />
 
-  const spatialHand = selected || playing ? { ...hand, visible: false, gesture: 'idle' as const } : hand
+  const spatialHand = selected || playing ? { ...hand, visible: false, gesture: 'idle' as const, pinchCandidate: false } : hand
 
   return (
     <main

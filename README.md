@@ -14,7 +14,7 @@ Open the local URL, choose **Enter Immersive Browse**, and allow camera access f
 ## Controls
 
 - Point or move the pointer to focus a tile.
-- Hold a thumb–index pinch (or click) to open the focused show.
+- Aim with the index finger, then tap index to thumb (or click) to open the locked show. The target freezes as contact begins, so the tap cannot drift into a neighboring card.
 - Close your fist (or drag) for direct 1:1 panning.
 - Swipe an open palm horizontally, vertically, or diagonally to give the catalog one inertial push.
 - Use Play, Watchlist, and Like from the detail overlay.

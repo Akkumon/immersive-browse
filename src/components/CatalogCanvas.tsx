@@ -5,7 +5,7 @@ import { catalog } from '../data/catalog'
 import type { Gesture } from '../lib/gestures'
 import type { LiquidSound } from '../lib/sound'
 
-type HandInput = { point: { x: number; y: number }; gesture: Gesture; visible: boolean }
+type HandInput = { point: { x: number; y: number }; gesture: Gesture; visible: boolean; pinchCandidate: boolean }
 
 export function CatalogCanvas({
   sound,
@@ -36,7 +36,7 @@ export function CatalogCanvas({
   }, [onRenderer, onSelect, onTrackingPoint, sound])
 
   useEffect(() => {
-    engineRef.current?.updateHand(hand.point, hand.gesture, hand.visible)
+    engineRef.current?.updateHand(hand.point, hand.gesture, hand.visible, hand.pinchCandidate)
   }, [hand])
 
   return <canvas ref={canvasRef} className="catalog-canvas" tabIndex={0} aria-label="Interactive show catalog. Drag or use arrow keys to browse; click or press Enter for details." />

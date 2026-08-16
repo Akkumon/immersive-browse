@@ -5,6 +5,7 @@ export type TrackingUpdate = {
   point: { x: number; y: number }
   screenPoint: { x: number; y: number }
   gesture: Gesture
+  pinchCandidate: boolean
   handedness?: string
 }
 
@@ -72,17 +73,19 @@ export class HandTracker {
       const landmarks = event.data.landmarks as Point3[]
       if (!landmarks.length) {
         this.stabilizer.reset()
-        this.onUpdate({ visible: false, point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle' })
+        this.onUpdate({ visible: false, point: { x: 0, y: 0 }, screenPoint: { x: 0.5, y: 0.12 }, gesture: 'idle', pinchCandidate: false })
         this.onStatus('lost')
         return
       }
       const point = landmarkToNdc(landmarks[8])
+      const rawGesture = classifyGesture(landmarks)
       this.onStatus('ready')
       this.onUpdate({
         visible: true,
         point,
         screenPoint: { x: (point.x + 1) / 2, y: 1 - (point.y + 1) / 2 },
-        gesture: this.stabilizer.update(classifyGesture(landmarks)),
+        gesture: this.stabilizer.update(rawGesture),
+        pinchCandidate: rawGesture === 'pinch',
         handedness: event.data.handedness,
       })
     }

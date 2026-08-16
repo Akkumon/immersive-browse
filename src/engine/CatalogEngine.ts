@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu'
 import * as TSL from 'three/tsl'
 import type { Category, Show } from '../data/catalog'
-import { palmSwipeVector, type Gesture } from '../lib/gestures'
+import { HandSelectionIntent, palmSwipeVector, type Gesture } from '../lib/gestures'
 import { dampVelocity, stepSpring, wrap, type Spring } from '../lib/physics'
 import type { LiquidSound } from '../lib/sound'
 
@@ -68,8 +68,7 @@ export class CatalogEngine {
   private palmOriginAt = 0
   private palmSwipeCommitted = false
   private lastHandSampleAt = 0
-  private pointStartedAt = 0
-  private selectionArmed = false
+  private handSelection = new HandSelectionIntent()
   private frame = 0
   private lastTime = performance.now()
   private lastMoveSound = 0
@@ -378,13 +377,12 @@ export class CatalogEngine {
     }
   }
 
-  updateHand(point: { x: number; y: number }, gesture: Gesture, visible: boolean) {
+  updateHand(point: { x: number; y: number }, gesture: Gesture, visible: boolean, pinchCandidate = false) {
     if (!visible) {
       this.previousGesture = 'idle'
       this.palmSwipeCommitted = false
       this.lastHandSampleAt = 0
-      this.pointStartedAt = 0
-      this.selectionArmed = false
+      this.handSelection.reset()
       return
     }
     const now = performance.now()
@@ -392,9 +390,6 @@ export class CatalogEngine {
     const delta = next.clone().sub(this.pointer)
     const handDt = this.lastHandSampleAt ? Math.max((now - this.lastHandSampleAt) / 1000, 1 / 120) : 0
     this.lastHandSampleAt = now
-    // Palm navigation is intentionally decoupled from targeting. It moves the
-    // catalog field without sweeping focus across individual cards.
-    if (gesture !== 'palm') this.pointer.copy(next)
     const screenPoint = { x: (point.x + 1) / 2, y: 1 - (point.y + 1) / 2 }
     this.events.onTrackingPoint(screenPoint, gesture === 'pinch' || gesture === 'grab')
 
@@ -437,24 +432,15 @@ export class CatalogEngine {
     } else {
       this.palmSwipeCommitted = false
     }
-    const catalogSettled = !this.catalogIsMoving()
-    if (gesture === 'point' && catalogSettled) {
-      if (!this.pointStartedAt) {
-        this.pointStartedAt = now
-        this.selectionArmed = false
-      } else if (now - this.pointStartedAt >= 180) {
-        this.selectionArmed = true
-      }
-    } else if (gesture === 'point') {
-      this.pointStartedAt = 0
-      this.selectionArmed = false
+    const selection = this.handSelection.update(gesture, this.catalogIsMoving(), pinchCandidate)
+    if (selection.trackTarget) {
+      if (this.previousGesture === 'point') this.pointer.lerp(next, 0.58)
+      else this.pointer.copy(next)
     }
-    const shouldSelect = gesture === 'pinch' && this.previousGesture === 'point' && this.selectionArmed
-    if (gesture !== 'point') {
-      this.pointStartedAt = 0
-      this.selectionArmed = false
+    if (selection.select) {
+      this.updateFocus()
+      this.selectFocused()
     }
-    if (shouldSelect) this.selectFocused()
     this.previousGesture = gesture
   }
 

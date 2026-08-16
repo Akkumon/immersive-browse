@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyGesture, GestureStabilizer, palmSwipeVector, landmarkToNdc, type Point3 } from './gestures'
+import { classifyGesture, GestureStabilizer, HandSelectionIntent, palmSwipeVector, landmarkToNdc, type Point3 } from './gestures'
 import { wrap } from './physics'
 
 const hand = Array.from({ length: 21 }, (): Point3 => ({ x: 0.5, y: 0.5, z: 0 }))
@@ -29,6 +29,13 @@ describe('gesture utilities', () => {
     expect(classifyGesture(points)).toBe('pinch')
   })
 
+  it('recognises an index-thumb tap with the remaining fingers curled', () => {
+    const points = posedHand('fist')
+    points[4] = { x: 0.44, y: 0.48, z: 0 }
+    points[8] = { x: 0.45, y: 0.48, z: 0 }
+    expect(classifyGesture(points)).toBe('pinch')
+  })
+
   it('separates an open palm from a closed fist', () => {
     expect(classifyGesture(posedHand('open'))).toBe('palm')
     const fist = posedHand('fist')
@@ -54,7 +61,6 @@ describe('gesture utilities', () => {
     const stabilizer = new GestureStabilizer()
     expect(stabilizer.update('point')).toBe('point')
     expect(stabilizer.update('pinch')).toBe('point')
-    expect(stabilizer.update('pinch')).toBe('point')
     expect(stabilizer.update('pinch')).toBe('pinch')
     expect(stabilizer.update('grab')).toBe('pinch')
     expect(stabilizer.update('pinch')).toBe('pinch')
@@ -66,5 +72,21 @@ describe('gesture utilities', () => {
     expect(stabilizer.update('palm')).toBe('palm')
     expect(stabilizer.update('point')).toBe('palm')
     expect(stabilizer.update('palm')).toBe('palm')
+  })
+
+  it('locks targeting to point and commits a quick pinch without retargeting', () => {
+    const intent = new HandSelectionIntent()
+    expect(intent.update('point', false)).toEqual({ trackTarget: true, select: false, armed: false })
+    expect(intent.update('point', false)).toEqual({ trackTarget: true, select: false, armed: true })
+    expect(intent.update('point', false, true)).toEqual({ trackTarget: false, select: false, armed: true })
+    expect(intent.update('pinch', false)).toEqual({ trackTarget: false, select: true, armed: false })
+  })
+
+  it('never selects from palm navigation or while the catalog is moving', () => {
+    const intent = new HandSelectionIntent()
+    intent.update('palm', true)
+    expect(intent.update('pinch', false).select).toBe(false)
+    expect(intent.update('point', true)).toEqual({ trackTarget: false, select: false, armed: false })
+    expect(intent.update('pinch', false).select).toBe(false)
   })
 })
